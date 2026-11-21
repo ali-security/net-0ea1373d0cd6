@@ -7,6 +7,7 @@ package html
 import (
 	"bytes"
 	"fmt"
+	"io"
 	"strings"
 	"testing"
 )
@@ -235,6 +236,67 @@ func TestRenderFosteredForeignContent(t *testing.T) {
 
 		if buf.String() != tc.want {
 			t.Errorf("unexpected output for %q:\ngot:  %q\nwant: %q", tc.in, buf.String(), tc.want)
+		}
+	}
+}
+
+func TestRenderDoctypeIdentifiers(t *testing.T) {
+	for _, tc := range []struct {
+		in   string
+		want string
+	}{
+		{
+			in:   `<!DOCTYPE html PUBLIC "&gt;&lt;img src=x onerror=alert(1)&gt;">`,
+			want: `<!DOCTYPE html PUBLIC "&gt;<img src=x onerror=alert(1)&gt;"><html><head></head><body></body></html>`,
+		},
+		{
+			in:   `<!DOCTYPE html SYSTEM "&gt;&lt;img src=x onerror=alert(1)&gt;">`,
+			want: `<!DOCTYPE html SYSTEM "&gt;<img src=x onerror=alert(1)&gt;"><html><head></head><body></body></html>`,
+		},
+		{
+			in:   `<!DOCTYPE html PUBLIC "a" '"&gt;&lt;img src=x onerror=alert(1)&gt;'>`,
+			want: `<!DOCTYPE html PUBLIC "a" '"&gt;<img src=x onerror=alert(1)&gt;'><html><head></head><body></body></html>`,
+		},
+	} {
+		d, err := Parse(strings.NewReader(tc.in))
+		if err != nil {
+			t.Fatal(err)
+		}
+		buf := bytes.NewBuffer(nil)
+		if err := Render(buf, d); err != nil {
+			t.Fatal(err)
+		}
+		if buf.String() != tc.want {
+			t.Errorf("unexpected output for %q:\ngot:  %q\nwant: %q", tc.in, buf.String(), tc.want)
+		}
+
+		// Re-parsing the rendered output must not produce any injected elements.
+		d1, err := Parse(strings.NewReader(buf.String()))
+		if err != nil {
+			t.Fatal(err)
+		}
+		var walk func(*Node)
+		walk = func(n *Node) {
+			if n.Type == ElementNode && n.Data == "img" {
+				t.Errorf("rendered output of %q injected an <img> element: %q", tc.in, buf.String())
+			}
+			for c := n.FirstChild; c != nil; c = c.NextSibling {
+				walk(c)
+			}
+		}
+		walk(d1)
+	}
+
+	// A user-constructed doctype identifier containing both quote types
+	// cannot be quoted safely and must be rejected.
+	for _, key := range []string{"public", "system"} {
+		n := &Node{
+			Type: DoctypeNode,
+			Data: "html",
+			Attr: []Attribute{{Key: key, Val: `'"><img src=x onerror=alert(1)>`}},
+		}
+		if err := Render(io.Discard, n); err == nil {
+			t.Errorf("rendering doctype with both quote types in %s identifier: got nil error, want error", key)
 		}
 	}
 }
